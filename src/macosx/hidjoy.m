@@ -66,7 +66,13 @@ typedef struct {
    CONFIG_STATE cfg_state;
    ALLEGRO_JOYSTICK_STATE state;
    IOHIDDeviceRef ident;
+   int button_usage[_AL_MAX_JOYSTICK_BUTTONS];
 } ALLEGRO_JOYSTICK_OSX;
+
+typedef struct sort_info {
+   int index;
+   ALLEGRO_JOYSTICK_OSX *joy;
+} sort_info;
 
 static IOHIDManagerRef hidManagerRef;
 static _AL_VECTOR joysticks;
@@ -212,6 +218,25 @@ static void add_axis(ALLEGRO_JOYSTICK_OSX *joy, int stick_index, int axis_index,
    joy->axes[stick_index][axis_index] = elem;
 }
 
+static int compare_buttons(const void *a, const void *b)
+  {
+   sort_info *_a = (sort_info *)a;
+   sort_info *_b = (sort_info *)b;
+   ALLEGRO_JOYSTICK_OSX *joy = _a->joy;
+   int i1 = _a->index;
+   int i2 = _b->index;
+
+   if (joy->buttons[i2] == NULL) {
+      return 0;
+   }
+   else if (joy->buttons[i1] == NULL) {
+      return 1;
+   }
+   else {
+      return (joy->button_usage[i1] - joy->button_usage[i2]);
+   }
+}
+
 static void add_elements(CFArrayRef elements, ALLEGRO_JOYSTICK_OSX *joy, int device_joystick)
 {
    int i, start_i = 0;
@@ -220,6 +245,9 @@ static void add_elements(CFArrayRef elements, ALLEGRO_JOYSTICK_OSX *joy, int dev
    int axis_index = 0;
    bool collection_started = false;
    int current_joystick = -1;
+   sort_info buttons[_AL_MAX_JOYSTICK_BUTTONS];
+   IOHIDElementRef button_refs[_AL_MAX_JOYSTICK_BUTTONS];
+   _AL_JOYSTICK_BUTTON_INFO button_info[_AL_MAX_JOYSTICK_BUTTONS];
 
    joy_null(joy);
 
@@ -230,7 +258,7 @@ static void add_elements(CFArrayRef elements, ALLEGRO_JOYSTICK_OSX *joy, int dev
          i
       );
       int etype = IOHIDElementGetType(elem);
-      if (etype == kIOHIDElementTypeCollection) {
+      if (etype == kIOHIDElementTypeCollection && IOHIDElementGetCollectionType(elem) == kIOHIDElementCollectionTypeApplication) {
          collection_started = true;
       }
       else if (etype == kIOHIDElementTypeInput_Button || etype == kIOHIDElementTypeInput_Misc) {
@@ -252,13 +280,14 @@ static void add_elements(CFArrayRef elements, ALLEGRO_JOYSTICK_OSX *joy, int dev
       );
 
       int usage = IOHIDElementGetUsage(elem);
-      if (IOHIDElementGetType(elem) == kIOHIDElementTypeCollection) {
+      if (IOHIDElementGetType(elem) == kIOHIDElementTypeCollection && IOHIDElementGetCollectionType(elem) == kIOHIDElementCollectionTypeApplication) {
          break;
       }
       if (IOHIDElementGetType(elem) == kIOHIDElementTypeInput_Button) {
          if (usage >= 0 && joy->parent.info.num_buttons < _AL_MAX_JOYSTICK_BUTTONS &&
             !joy->buttons[joy->parent.info.num_buttons]) {
             joy->buttons[joy->parent.info.num_buttons] = elem;
+	    joy->button_usage[joy->parent.info.num_buttons] = usage; // these will be sorted later
             sprintf(default_name, "Button %d", joy->parent.info.num_buttons);
             const char *name = get_element_name(elem, default_name);
             char *str = al_malloc(strlen(name)+1);
@@ -381,6 +410,22 @@ static void add_elements(CFArrayRef elements, ALLEGRO_JOYSTICK_OSX *joy, int dev
          }
       }
    }
+
+   // sort buttons by their usage as this is usually the best default order
+
+   for (i = 0; i < joy->parent.info.num_buttons; i++) {
+      buttons[i].index = i;
+      buttons[i].joy = joy;
+      button_refs[i] = joy->buttons[i];
+      button_info[i] = joy->parent.info.button[i];
+   }
+
+   qsort(&buttons, joy->parent.info.num_buttons, sizeof(sort_info), compare_buttons);
+
+   for (i = 0; i < joy->parent.info.num_buttons; i++) {
+      joy->buttons[i] = button_refs[buttons[i].index];
+      joy->parent.info.button[i] = button_info[buttons[i].index];
+   }
 }
 
 static void osx_joy_generate_configure_event(void)
@@ -412,7 +457,7 @@ static int device_count_joysticks(IOHIDDeviceRef ref)
       );
 
       int etype = IOHIDElementGetType(elem);
-      if (etype == kIOHIDElementTypeCollection) {
+      if (etype == kIOHIDElementTypeCollection && IOHIDElementGetCollectionType(elem) == kIOHIDElementCollectionTypeApplication) {
          collection_started = true;
       }
       else if (etype == kIOHIDElementTypeInput_Button || etype == kIOHIDElementTypeInput_Misc) {
